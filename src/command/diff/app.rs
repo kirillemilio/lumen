@@ -1796,20 +1796,32 @@ fn run_app_internal(
                                     state.clear_selection();
                                 } else if let Some(hunk_index) = state.focused_hunk {
                                     // Tier 2: Focused hunk → line-range annotation for the hunk
-                                    let is_deleted =
-                                        !diff.old_content.is_empty() && diff.new_content.is_empty();
-                                    let hunk_panel = if is_deleted {
-                                        DiffPanelFocus::Old
-                                    } else {
-                                        DiffPanelFocus::New
-                                    };
-
                                     state.ensure_cache();
                                     let sbs = state.side_by_side_ref();
                                     let hunks = state.hunks_ref();
                                     let hunk_start = hunks.get(hunk_index).copied().unwrap_or(0);
                                     let next_hunk_start =
                                         hunks.get(hunk_index + 1).copied().unwrap_or(sbs.len());
+
+                                    // Determine the correct panel based on hunk content.
+                                    // If the hunk contains only Delete lines (old_line present, new_line absent),
+                                    // use Old panel. Otherwise use New panel (for inserts, modifies, or mixed hunks).
+                                    let mut has_delete = false;
+                                    let mut has_insert = false;
+                                    for i in hunk_start..next_hunk_start {
+                                        if let Some(dl) = sbs.get(i) {
+                                            match dl.change_type {
+                                                ChangeType::Delete => has_delete = true,
+                                                ChangeType::Insert => has_insert = true,
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    let hunk_panel = if has_delete && !has_insert {
+                                        DiffPanelFocus::Old
+                                    } else {
+                                        DiffPanelFocus::New
+                                    };
 
                                     let mut actual_hunk_end = hunk_start;
                                     for i in hunk_start..next_hunk_start {
