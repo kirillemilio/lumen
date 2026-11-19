@@ -60,6 +60,71 @@ use spinoff::{spinners, Color, Spinner};
 use crate::commit_reference::CommitReference;
 use crate::vcs::{StackedCommitInfo, VcsBackend};
 
+/// Parsed line command result
+struct ParsedLineCommand {
+    panel: DiffPanelFocus,
+    start_line: usize,
+    end_line: usize,
+}
+
+/// Parse line command from : prompt
+/// Formats:
+///   42       -> line 42 on current panel
+///   42-50    -> range 42-50 on current panel
+///   o42      -> line 42 on Old panel
+///   n42      -> line 42 on New panel
+///   o42-50   -> range 42-50 on Old panel
+///   n42-50   -> range 42-50 on New panel
+fn parse_line_command(input: &str, current_panel: DiffPanelFocus) -> Option<ParsedLineCommand> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+
+    // Check for explicit panel prefix (o or n)
+    let (panel, rest) = if let Some(rest) = input.strip_prefix('o') {
+        (DiffPanelFocus::Old, rest)
+    } else if let Some(rest) = input.strip_prefix('n') {
+        (DiffPanelFocus::New, rest)
+    } else {
+        // No prefix, use current panel (fallback to New if None)
+        let panel = if current_panel == DiffPanelFocus::None {
+            DiffPanelFocus::New
+        } else {
+            current_panel
+        };
+        (panel, input)
+    };
+
+    // Parse line number or range
+    if let Some((start, end)) = rest.split_once('-') {
+        // Range: 42-50
+        let start_line = start.trim().parse::<usize>().ok()?;
+        let end_line = end.trim().parse::<usize>().ok()?;
+        if start_line > 0 && end_line >= start_line {
+            Some(ParsedLineCommand {
+                panel,
+                start_line,
+                end_line,
+            })
+        } else {
+            None
+        }
+    } else {
+        // Single line: 42
+        let line = rest.trim().parse::<usize>().ok()?;
+        if line > 0 {
+            Some(ParsedLineCommand {
+                panel,
+                start_line: line,
+                end_line: line,
+            })
+        } else {
+            None
+        }
+    }
+}
+
 /// Navigate to a different commit in stacked mode.
 /// Returns true if navigation was successful.
 fn navigate_stacked_commit(
@@ -371,6 +436,7 @@ fn run_app_internal(
 
     let mut active_modal: Option<Modal> = None;
     let mut annotation_editor: Option<AnnotationEditor> = None;
+    let mut command_input: Option<String> = None; // For : command mode
     let mut pending_watch_event: Option<WatchEvent> = None;
     let mut pending_events: VecDeque<Event> = VecDeque::new();
     let mut send_annotations_on_exit = false;
@@ -466,6 +532,7 @@ fn run_app_internal(
                     &state.settings,
                     hunk_count,
                     state.diff_fullscreen,
+                    state.keyboard_panel_focus,
                     &state.search_state,
                     commit_ref,
                     pr_info.as_ref(),
@@ -570,6 +637,28 @@ fn run_app_internal(
                 }
 
                 *gaps_cell.borrow_mut() = gaps;
+
+                // Render command input prompt at the bottom
+                if let Some(ref input) = command_input {
+                    let t = theme::get();
+                    let term = frame.area();
+                    let prompt_text = format!(":{}", input);
+                    let prompt_area = Rect::new(
+                        0,
+                        term.height.saturating_sub(1),
+                        term.width,
+                        1,
+                    );
+                    let prompt_style = Style::default()
+                        .fg(t.ui.text_primary)
+                        .bg(t.ui.footer_branch_bg);
+                    frame.render_widget(
+                        ratatui::widgets::Paragraph::new(prompt_text)
+                            .style(prompt_style),
+                        prompt_area,
+                    );
+                }
+
                 // Editor is rendered inline by render_diff above; only the modal
                 // (annotations list, file picker, etc.) sits on top of everything.
                 if let Some(ref modal) = active_modal {
@@ -643,6 +732,46 @@ fn run_app_internal(
                             state.mark_search_dirty();
                         }
                         _ => {}
+                    }
+                }
+                // Handle command input mode (: commands)
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && command_input.is_some()
+                        && active_modal.is_none() =>
+                {
+                    if let Some(ref mut input) = command_input {
+                        match key.code {
+                            KeyCode::Char(c) => {
+                                input.push(c);
+                            }
+                            KeyCode::Backspace => {
+                                input.pop();
+                            }
+                            KeyCode::Enter => {
+                                // Parse and execute command
+                                if !input.is_empty() && !state.file_diffs.is_empty() {
+                                    if let Some(parsed) = parse_line_command(input, state.keyboard_panel_focus) {
+                                        let file_index = state.current_file;
+                                        let diff = &state.file_diffs[file_index];
+                                        let filename = diff.filename.clone();
+
+                                        let target = super::state::AnnotationTarget::LineRange {
+                                            panel: parsed.panel,
+                                            start_line: parsed.start_line,
+                                            end_line: parsed.end_line,
+                                        };
+                                        let editor = AnnotationEditor::new(filename, target);
+                                        annotation_editor = Some(editor);
+                                    }
+                                }
+                                command_input = None;
+                            }
+                            KeyCode::Esc => {
+                                command_input = None;
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 Event::Key(key)
@@ -1238,7 +1367,12 @@ fn run_app_internal(
                         _ => {}
                     }
                 }
-                Event::Key(key) if key.kind == KeyEventKind::Press && active_modal.is_none() => {
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && active_modal.is_none()
+                        && annotation_editor.is_none()
+                        && command_input.is_none() =>
+                {
                     if key.code != KeyCode::Char('g') {
                         state.pending_key = PendingKey::None;
                     }
@@ -1473,7 +1607,13 @@ fn run_app_internal(
                         KeyCode::Char('h') | KeyCode::Left => {
                             if state.focused_panel == FocusedPanel::DiffView && !state.settings.wrap
                             {
-                                state.h_scroll = state.h_scroll.saturating_sub(4);
+                                // In side-by-side mode, h/l switch panel focus
+                                if state.diff_fullscreen == DiffFullscreen::None && state.h_scroll == 0 {
+                                    state.keyboard_panel_focus = DiffPanelFocus::Old;
+                                } else {
+                                    // In fullscreen mode or when scrolled, do horizontal scroll
+                                    state.h_scroll = state.h_scroll.saturating_sub(4);
+                                }
                             } else if state.focused_panel == FocusedPanel::Sidebar {
                                 state.sidebar_h_scroll = state.sidebar_h_scroll.saturating_sub(4);
                             }
@@ -1482,8 +1622,14 @@ fn run_app_internal(
                             let term_width = terminal.size()?.width;
                             if state.focused_panel == FocusedPanel::DiffView && !state.settings.wrap
                             {
-                                state.h_scroll = state.h_scroll.saturating_add(4);
-                                clamp_h_scroll(&mut state, term_width);
+                                // In side-by-side mode, h/l switch panel focus
+                                if state.diff_fullscreen == DiffFullscreen::None && state.h_scroll == 0 {
+                                    state.keyboard_panel_focus = DiffPanelFocus::New;
+                                } else {
+                                    // In fullscreen mode or when scrolled, do horizontal scroll
+                                    state.h_scroll = state.h_scroll.saturating_add(4);
+                                    clamp_h_scroll(&mut state, term_width);
+                                }
                             } else if state.focused_panel == FocusedPanel::Sidebar {
                                 state.sidebar_h_scroll = state.sidebar_h_scroll.saturating_add(4);
                                 clamp_sidebar_h_scroll(&mut state, term_width);
@@ -1803,24 +1949,31 @@ fn run_app_internal(
                                     let next_hunk_start =
                                         hunks.get(hunk_index + 1).copied().unwrap_or(sbs.len());
 
-                                    // Determine the correct panel based on hunk content.
-                                    // If the hunk contains only Delete lines (old_line present, new_line absent),
-                                    // use Old panel. Otherwise use New panel (for inserts, modifies, or mixed hunks).
-                                    let mut has_delete = false;
-                                    let mut has_insert = false;
-                                    for i in hunk_start..next_hunk_start {
-                                        if let Some(dl) = sbs.get(i) {
-                                            match dl.change_type {
-                                                ChangeType::Delete => has_delete = true,
-                                                ChangeType::Insert => has_insert = true,
-                                                _ => {}
+                                    // Determine the panel for annotation.
+                                    // Priority: use keyboard_panel_focus if set (via h/l navigation),
+                                    // otherwise auto-detect based on hunk content.
+                                    let hunk_panel = if state.keyboard_panel_focus != DiffPanelFocus::None {
+                                        state.keyboard_panel_focus
+                                    } else {
+                                        // Fallback: analyze hunk content.
+                                        // If the hunk contains only Delete lines, use Old panel.
+                                        // Otherwise use New panel (for inserts, modifies, or mixed hunks).
+                                        let mut has_delete = false;
+                                        let mut has_insert = false;
+                                        for i in hunk_start..next_hunk_start {
+                                            if let Some(dl) = sbs.get(i) {
+                                                match dl.change_type {
+                                                    ChangeType::Delete => has_delete = true,
+                                                    ChangeType::Insert => has_insert = true,
+                                                    _ => {}
+                                                }
                                             }
                                         }
-                                    }
-                                    let hunk_panel = if has_delete && !has_insert {
-                                        DiffPanelFocus::Old
-                                    } else {
-                                        DiffPanelFocus::New
+                                        if has_delete && !has_insert {
+                                            DiffPanelFocus::Old
+                                        } else {
+                                            DiffPanelFocus::New
+                                        }
                                     };
 
                                     let mut actual_hunk_end = hunk_start;
@@ -1832,17 +1985,36 @@ fn run_app_internal(
                                         }
                                     }
 
-                                    let line_num = |dl: &super::types::DiffLine| {
-                                        dl.line_number(hunk_panel)
-                                            .or_else(|| dl.line_number(DiffPanelFocus::Old))
-                                    };
+                                    // Find first and last line numbers that exist on the target panel.
+                                    // Don't fallback to the other panel - only use lines that actually exist.
+                                    let mut start_line: Option<usize> = None;
+                                    let mut end_line: Option<usize> = None;
+                                    for i in hunk_start..=actual_hunk_end {
+                                        if let Some(dl) = sbs.get(i) {
+                                            if let Some(line_no) = dl.line_number(hunk_panel) {
+                                                if start_line.is_none() {
+                                                    start_line = Some(line_no);
+                                                }
+                                                end_line = Some(line_no);
+                                            }
+                                        }
+                                    }
 
-                                    let start_line =
-                                        sbs.get(hunk_start).and_then(line_num).unwrap_or(1);
-                                    let end_line = sbs
-                                        .get(actual_hunk_end)
-                                        .and_then(line_num)
-                                        .unwrap_or(start_line);
+                                    // If no lines found in the hunk on target panel, find the next available line after the hunk
+                                    if start_line.is_none() {
+                                        for i in (actual_hunk_end + 1)..sbs.len() {
+                                            if let Some(dl) = sbs.get(i) {
+                                                if let Some(line_no) = dl.line_number(hunk_panel) {
+                                                    start_line = Some(line_no);
+                                                    end_line = Some(line_no);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    let start_line = start_line.unwrap_or(1);
+                                    let end_line = end_line.unwrap_or(start_line);
 
                                     let target = super::state::AnnotationTarget::LineRange {
                                         panel: hunk_panel,
@@ -1857,6 +2029,12 @@ fn run_app_internal(
                                     let editor = AnnotationEditor::new(filename, target);
                                     annotation_editor = Some(editor);
                                 }
+                            }
+                        }
+                        KeyCode::Char(':') => {
+                            // Enter command mode for line-based annotations
+                            if !state.file_diffs.is_empty() {
+                                command_input = Some(String::new());
                             }
                         }
                         KeyCode::Char('I') => {

@@ -1266,6 +1266,7 @@ pub fn render_diff(
     settings: &DiffViewSettings,
     hunk_count: usize,
     diff_fullscreen: DiffFullscreen,
+    keyboard_panel_focus: DiffPanelFocus,
     search_state: &SearchState,
     commit_ref: &str,
     pr_info: Option<&PrInfo>,
@@ -1409,7 +1410,17 @@ pub fn render_diff(
     // Tracks the screen rect of the inline editor, when one is rendered this frame.
     let mut editor_rect: Option<Rect> = None;
 
-    let border_style = Style::default().fg(t.ui.border_unfocused);
+    // Separate border styles for Old and New panels based on keyboard focus
+    let old_border_style = if keyboard_panel_focus == DiffPanelFocus::Old {
+        Style::default().fg(t.ui.border_focused)
+    } else {
+        Style::default().fg(t.ui.border_unfocused)
+    };
+    let new_border_style = if keyboard_panel_focus == DiffPanelFocus::New {
+        Style::default().fg(t.ui.border_focused)
+    } else {
+        Style::default().fg(t.ui.border_unfocused)
+    };
     let title_style = if focused_panel == FocusedPanel::DiffView {
         Style::default().fg(t.ui.border_focused)
     } else {
@@ -1568,7 +1579,7 @@ pub fn render_diff(
             Block::default()
                 .title(Line::styled(" [2] New File ", title_style))
                 .borders(Borders::ALL)
-                .border_style(border_style),
+                .border_style(new_border_style),
         );
         frame.render_widget(new_para, main_area);
 
@@ -1744,7 +1755,7 @@ pub fn render_diff(
             Block::default()
                 .title(Line::styled(" [2] Deleted File ", title_style))
                 .borders(Borders::ALL)
-                .border_style(border_style),
+                .border_style(old_border_style),
         );
         frame.render_widget(old_para, main_area);
 
@@ -1924,7 +1935,12 @@ pub fn render_diff(
 
         for (i, diff_line) in visible_lines.iter().enumerate() {
             let line_idx = scroll_usize + i;
-            let in_focused = is_in_focused_hunk(line_idx, diff_line.change_type);
+            let in_focused_hunk = is_in_focused_hunk(line_idx, diff_line.change_type);
+            // Blue hunk marker follows keyboard_panel_focus:
+            // - If None: show on both panels (default state)
+            // - If Old/New: show only on the focused panel
+            let old_in_focused = in_focused_hunk && (keyboard_panel_focus == DiffPanelFocus::None || keyboard_panel_focus == DiffPanelFocus::Old);
+            let new_in_focused = in_focused_hunk && (keyboard_panel_focus == DiffPanelFocus::None || keyboard_panel_focus == DiffPanelFocus::New);
             let hunk_viewed = is_line_in_viewed_hunk(line_idx, diff_line.change_type);
             let mut style = DiffLineStyle::for_change_type(diff_line.change_type, bg, t);
             if hunk_viewed {
@@ -1962,7 +1978,7 @@ pub fn render_diff(
             if old_area.is_some() {
                 let mut old_spans: Vec<Span> = Vec::new();
                 old_spans.push(make_indicator_span(
-                    in_focused,
+                    old_in_focused,
                     old_in_annotation,
                     old_line_selected,
                     bg,
@@ -2069,7 +2085,7 @@ pub fn render_diff(
                 let mut new_spans: Vec<Span> = Vec::new();
                 if old_area.is_none() {
                     new_spans.push(make_indicator_span(
-                        in_focused,
+                        new_in_focused,
                         new_in_annotation,
                         new_line_selected,
                         bg,
@@ -2234,7 +2250,7 @@ pub fn render_diff(
                     Block::default()
                         .title(Line::styled(" [2] Old ", title_style))
                         .borders(Borders::ALL)
-                        .border_style(border_style),
+                        .border_style(old_border_style),
                 );
             frame.render_widget(old_para, area);
         }
@@ -2254,7 +2270,7 @@ pub fn render_diff(
                         .title(Line::styled(" New ", title_style))
                         .borders(new_borders)
                         .style(Style::default().bg(bg))
-                        .border_style(border_style),
+                        .border_style(new_border_style),
                 );
             frame.render_widget(new_para, area);
         }

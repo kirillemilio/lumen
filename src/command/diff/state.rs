@@ -188,6 +188,8 @@ pub struct AppState {
     // Selection state
     /// Which panel has selection focus
     pub diff_panel_focus: DiffPanelFocus,
+    /// Which panel has keyboard focus (for h/l navigation and annotation creation)
+    pub keyboard_panel_focus: DiffPanelFocus,
     /// Current text selection
     pub selection: Selection,
     /// Whether a mouse drag is in progress
@@ -315,6 +317,7 @@ impl AppState {
             vcs_name: "git", // Default, will be set by caller
             diff_reference: None,
             diff_panel_focus: DiffPanelFocus::default(),
+            keyboard_panel_focus: DiffPanelFocus::None, // No panel focused initially, hunk marker on both
             selection: Selection::default(),
             is_dragging: false,
             show_selection_tooltip: false,
@@ -912,8 +915,62 @@ impl AppState {
     pub fn format_annotations_for_export(&self) -> String {
         let mut result = String::new();
 
+        // Helper to get commit SHA for a ref
+        let get_sha = |ref_name: &str| -> String {
+            let output = if self.vcs_name == "git" {
+                std::process::Command::new("git")
+                    .args(["rev-parse", "--short", ref_name])
+                    .output()
+            } else if self.vcs_name == "jj" {
+                std::process::Command::new("jj")
+                    .args(["log", "-r", ref_name, "--no-graph", "-T", "commit_id.short()", "--limit", "1"])
+                    .output()
+            } else {
+                return "unknown".to_string();
+            };
+
+            output
+                .ok()
+                .and_then(|output| {
+                    if output.status.success() {
+                        String::from_utf8(output.stdout).ok()
+                    } else {
+                        None
+                    }
+                })
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        };
+
+        // Add comparison context header for AI agent
         if let Some(ref reference) = self.diff_reference {
-            result.push_str(&format!("# {}\n\n", reference));
+            result.push_str(&format!("# Comparing: {}\n", reference));
+            result.push_str("#\n");
+
+            // Parse the reference to extract base and target
+            if let Some((base, target)) = reference.split_once("..") {
+                // Two-dot or three-dot comparison (commit..commit, branch..branch, etc.)
+                let base_sha = get_sha(base);
+                let target_sha = get_sha(target);
+                result.push_str(&format!("# LEFT (old):  {} ({})\n", base, base_sha));
+                result.push_str(&format!("# RIGHT (new): {} ({})\n", target, target_sha));
+            } else {
+                // Single ref comparison (e.g., "HEAD" or branch name)
+                let ref_sha = get_sha(reference);
+                result.push_str(&format!("# LEFT (old):  {} ({})\n", reference, ref_sha));
+                result.push_str("# RIGHT (new): working directory (uncommitted changes)\n");
+            }
+
+            result.push_str("#\n");
+            result.push_str("# Annotations below reference line numbers in these versions.\n");
+            result.push_str("\n");
+        } else {
+            result.push_str("# Comparing: working directory changes\n");
+            result.push_str("#\n");
+            let head_sha = get_sha("HEAD");
+            result.push_str(&format!("# LEFT (old):  HEAD ({})\n", head_sha));
+            result.push_str("# RIGHT (new): working directory (uncommitted changes)\n");
+            result.push_str("\n");
         }
 
         for (i, ann) in self.annotations.iter().enumerate() {
