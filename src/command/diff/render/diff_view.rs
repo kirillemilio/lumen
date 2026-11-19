@@ -2083,16 +2083,15 @@ pub fn render_diff(
 
             if new_area.is_some() {
                 let mut new_spans: Vec<Span> = Vec::new();
-                if old_area.is_none() {
-                    new_spans.push(make_indicator_span(
-                        new_in_focused,
-                        new_in_annotation,
-                        new_line_selected,
-                        bg,
-                        focus_style,
-                        annotation_indicator_style,
-                    ));
-                }
+                // Always add indicator for New panel in side-by-side mode
+                new_spans.push(make_indicator_span(
+                    new_in_focused,
+                    new_in_annotation,
+                    new_line_selected,
+                    bg,
+                    focus_style,
+                    annotation_indicator_style,
+                ));
                 let mut new_line_pushed = false;
                 match &diff_line.new_line {
                     Some((num, _text)) => {
