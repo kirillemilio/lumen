@@ -1513,11 +1513,27 @@ pub fn render_diff(
                 !matches!(diff_line.change_type, ChangeType::Equal)
                     && h_idx.map_or(false, |idx| viewed_hunks.contains(&idx))
             };
+            // Check if this line is in the focused hunk
+            let in_focused_hunk = {
+                if matches!(diff_line.change_type, ChangeType::Equal) {
+                    false
+                } else if let Some(hunk_idx) = focused_hunk {
+                    if let Some(&hunk_start) = hunks.get(hunk_idx) {
+                        let hunk_end = hunks.get(hunk_idx + 1).copied().unwrap_or(usize::MAX);
+                        line_idx >= hunk_start && line_idx < hunk_end
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+            let new_in_focused = in_focused_hunk && (keyboard_panel_focus == DiffPanelFocus::None || keyboard_panel_focus == DiffPanelFocus::New);
 
             if let Some((num, text)) = &diff_line.new_line {
                 let mut spans: Vec<Span> = Vec::new();
                 spans.push(make_indicator_span(
-                    false,
+                    new_in_focused,
                     in_annotation,
                     new_line_selected,
                     bg,
@@ -1689,11 +1705,27 @@ pub fn render_diff(
                 !matches!(diff_line.change_type, ChangeType::Equal)
                     && h_idx.map_or(false, |idx| viewed_hunks.contains(&idx))
             };
+            // Check if this line is in the focused hunk
+            let in_focused_hunk = {
+                if matches!(diff_line.change_type, ChangeType::Equal) {
+                    false
+                } else if let Some(hunk_idx) = focused_hunk {
+                    if let Some(&hunk_start) = hunks.get(hunk_idx) {
+                        let hunk_end = hunks.get(hunk_idx + 1).copied().unwrap_or(usize::MAX);
+                        line_idx >= hunk_start && line_idx < hunk_end
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+            let old_in_focused = in_focused_hunk && (keyboard_panel_focus == DiffPanelFocus::None || keyboard_panel_focus == DiffPanelFocus::Old);
 
             if let Some((num, text)) = &diff_line.old_line {
                 let mut spans: Vec<Span> = Vec::new();
                 spans.push(make_indicator_span(
-                    false,
+                    old_in_focused,
                     in_annotation,
                     old_line_selected,
                     bg,
