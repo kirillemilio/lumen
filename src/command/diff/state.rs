@@ -157,6 +157,8 @@ pub struct AppState {
     pub sidebar_selected: usize,
     pub sidebar_scroll: usize,
     pub sidebar_h_scroll: u16,
+    /// Whether the sidebar selection was manually changed by the user (prevents auto-sync on reload)
+    pub manual_sidebar_selection: bool,
     pub scroll: u16,
     pub h_scroll: u16,
     pub focused_panel: FocusedPanel,
@@ -295,6 +297,7 @@ impl AppState {
             sidebar_selected,
             sidebar_scroll: 0,
             sidebar_h_scroll: 0,
+            manual_sidebar_selection: false,
             scroll,
             h_scroll: 0,
             focused_panel: FocusedPanel::default(),
@@ -652,8 +655,13 @@ impl AppState {
             return;
         }
 
-        if let Some(idx) = self.sidebar_visible_index_for_file(self.current_file) {
-            self.sidebar_selected = idx;
+        // Only sync sidebar_selected with current_file if user hasn't manually selected a different item
+        if !self.manual_sidebar_selection {
+            if let Some(idx) = self.sidebar_visible_index_for_file(self.current_file) {
+                self.sidebar_selected = idx;
+            } else if self.sidebar_selected >= self.sidebar_visible.len() {
+                self.sidebar_selected = self.sidebar_visible.len() - 1;
+            }
         } else if self.sidebar_selected >= self.sidebar_visible.len() {
             self.sidebar_selected = self.sidebar_visible.len() - 1;
         }
@@ -856,6 +864,7 @@ impl AppState {
         self.diff_fullscreen = DiffFullscreen::None;
         self.clear_selection(); // Clear selection when changing files
         self.invalidate_cache(); // Clear cache for new file
+        self.manual_sidebar_selection = false; // Reset flag when file is opened
 
         // Use cached computation
         let hunks = self.get_hunks().to_vec();

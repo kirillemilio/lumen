@@ -1565,6 +1565,7 @@ fn run_app_internal(
                             if state.focused_panel == FocusedPanel::Sidebar {
                                 if state.sidebar_selected + 1 < state.sidebar_visible_len() {
                                     state.sidebar_selected += 1;
+                                    state.manual_sidebar_selection = true;
                                 }
                                 let visible_height =
                                     terminal.size()?.height.saturating_sub(5) as usize;
@@ -1578,6 +1579,7 @@ fn run_app_internal(
                                 if state.sidebar_selected > 0 {
                                     state.sidebar_selected =
                                         state.sidebar_selected.saturating_sub(1);
+                                    state.manual_sidebar_selection = true;
                                 }
                                 let visible_height =
                                     terminal.size()?.height.saturating_sub(5) as usize;
